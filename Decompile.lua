@@ -1,9 +1,11 @@
--- Credits to Fiu, i used fiu to make this decompiler
+
 local string_format = string.format
 
 local function cerror(chunk, reason)
 	return string_format("--CELESTIALERROR[%s]: Failed to decompile reason: %s\nC\nC\nC\nC\nC\nC\nC\nC\nC", chunk, reason)
 end
+
+-- opcode list pls dont remove it you can add more but if you remove the code stops working
 
 
 local opList = {
@@ -72,16 +74,39 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 	endpc = endpc or #proto.code
 
 	local env = getfenv(2)
+	local old_env_script = env.script
+	env.script = nil
 	
 	local stack = {}
 
 	local output = {}
 	local pc = startpc
 	local globals = 0
+	
+	
+	local isinsideforloop = 0
+	
+	-- these are extreme important btw
+	
+	local firstparamforloop = nil
+	local secondparamforloop = nil
+	local thirdparamforloop = nil
+	local forloopidk = {}
+	local calltype = nil
+	local callargs = nil -- i aint doing this yet
+	
+	
+	
+	
+	
 	while pc <= endpc do
 		local instr = proto.code[pc]
 		local op = instr.opcode
 		local inst = instr
+		
+		if isinsideforloop > 0 then
+			isinsideforloop = isinsideforloop - 1
+		end
 
 		if instr.opname == "auxvalue" then
 			pc = pc + 1
@@ -110,11 +135,53 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 			stack[instr.A] = instr.B == 1
 
 		elseif op == opList.LOADN then
+			
+			
+			if proto.code[pc + 3].opcode == opList.FORNPREP then
+				stack[instr.A] = instr.D
+				forloopidk[instr.A] = "i"
+				
+				-- fix names variables since after a for loop they get interpreted with more than the original
+				
+				for i,v in proto.code do
+					if v.A then
+						v.A -= inst.A
+					end
+				end
+				
+				pc = pc + 1
+				firstparamforloop = instr.D
+				continue
+			elseif proto.code[pc + 2].opcode == opList.FORNPREP then
+				stack[instr.A] = instr.D
+				pc = pc + 1
+				secondparamforloop = instr.D
+				continue
+			elseif proto.code[pc + 1].opcode == opList.FORNPREP then
+				stack[instr.A] = instr.D
+				pc = pc + 1
+				thirdparamforloop = instr.D
+				continue
+			end
+			
+			
 			table.insert(output, indent .. ("local %s = %d"):format(varName(proto, instr.A, pc), instr.D))
 			pc = pc + 1
 			stack[instr.A] = instr.D
 
 		elseif op == opList.MOVE then
+			local pass = false
+			for i,v in output do
+				if v:find(varName(proto, instr.B, pc)) then
+					pass = true
+				end
+			end
+			if pass == false then
+				pc = pc + 1
+				continue
+			end
+			
+			
 			table.insert(output, indent .. ("%s = %s"):format(varName(proto, instr.A, pc), varName(proto, instr.B, pc)))
 			pc = pc + 1
 			stack[instr.A] = stack[instr.B]
@@ -125,6 +192,39 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 			table.insert(output, indent..varName(proto, instr.A, pc).." = "..tostring(kv))
 			
 			stack[inst.A] = kv
+			pc = pc + 1
+
+		elseif op == opList.FORNPREP then
+			isinsideforloop = isinsideforloop + inst.D
+			
+			if thirdparamforloop == 1 then
+				if not firstparamforloop or not secondparamforloop then
+					table.insert("--FOR LOOP STRUCTURE DETECTED BUT CAUSED ERROR WILL BE FIXED ON THE NEXT UPDATE")
+				end
+				pcall(function(...) -- error handling i guess
+					
+					table.insert(output, indent..("for i = %s, %s do"):format(firstparamforloop, secondparamforloop))
+
+				end)
+				
+			else
+				if not firstparamforloop or not secondparamforloop then
+					table.insert("--FOR LOOP STRUCTURE DETECTED BUT CAUSED ERROR WILL BE FIXED ON THE NEXT UPDATE")
+				end
+				pcall(function(...) 
+					table.insert(output, indent..("for i = %s, %s, %s do"):format(firstparamforloop, secondparamforloop, thirdparamforloop))
+				end)
+			end
+			
+			firstparamforloop = nil
+			secondparamforloop = nil
+			thirdparamforloop = nil
+			
+			indent = indent.."\t"
+			
+			pc = pc + 1
+		elseif op == opList.FORNLOOP then
+			table.insert(output, string.sub(indent, 3).."end")
 			pc = pc + 1
 
 		elseif op == opList.GETGLOBAL then
@@ -186,7 +286,7 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 				ops[op],
 				tostring(instr.K)
 				))
-			
+		
 			if op == opList.ADDK then
 				stack[inst.A] = stack[inst.B] + inst.K
 			elseif op == opList.SUBK then
@@ -258,17 +358,20 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 			
 		elseif op == opList.CALL then
 			local args = {}
-			for i = 0, instr.B - 1 do
-				table.insert(args, varName(proto, i, pc))
+			for i = 0, instr.B - 2 do
+				table.insert(args, if forloopidk[i+2] then forloopidk[i+2] else varName(proto, i+1, pc))
 			end
+			
+			
+			
 			if instr.B - 1 == 0 then
 				args = {}
 			end
 			
 			
 			
-			local callStr = varName(proto, instr.A, pc) .. "(" .. table.concat(args, ", ") .. ")"
-			if instr.B and instr.B > 1 then
+			local callStr = if calltype then calltype .. "(" .. table.concat(args, ", ") .. ")" else varName(proto, instr.A, pc) .. "(" .. table.concat(args, ", ") .. ")"
+			if instr.B and instr.B - 1 > 1 then
 				local rets = {}
 				for i = instr.A, instr.A + instr.B - 2 do
 					table.insert(rets, varName(proto, i, pc))
@@ -424,7 +527,7 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 			else
 				local rets = {}
 				for i = 0, instr.B - 2 do
-					table.insert(rets, "var" .. tostring(instr.A + i))
+					table.insert(rets, varName(proto, instr.A + i, pc))
 				end
 				if #rets > 0 then
 					table.insert(output, indent .. "return " .. table.concat(rets, ", "))
@@ -433,9 +536,20 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 			pc = pc + 1
 
 		elseif op == opList.GETIMPORT then
+			
+			
+			
 			local count = instr.KC
 			local k0 = instr.K0
 			local import = env[k0]
+			
+			if proto.code[pc + 2].opcode == opList.CALL or proto.code[pc + 3].opcode == opList.CALL then
+				calltype = k0
+				pc = pc + 1
+				continue
+			end
+			
+			
 
 			if count == 1 then
 				table.insert(output, indent..varName(proto, instr.A, pc).." = getfenv()['"..k0.."']")
@@ -455,7 +569,7 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 			-- It should never appear repeatedly, so we just skip
 			pc = pc + 1
 			
-		elseif op == opList.GETVARARGS then -- WHYYYYY THERES OPCODES LIKE THIS BRO
+		elseif op == opList.GETVARARGS then
 			pc = pc + 1
 			
 		elseif op == opList.FASTCALL3 then
@@ -483,21 +597,7 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 			
 			
 		
-		elseif op == opList.FORGPREP or op == opList.FORNLOOP or op == opList.FORNPREP or op == opList.FORGLOOP or op == opList.FORGPREP_NEXT or op == opList.FORGPREP_INEXT then
-			
-			
-			table.insert(output, indent.."-- FOR LOOP STRUCTURE DETECTED NOT SUPPORTED YET")
-			
-			if inst.D <= 0 then
-				pc = pc + 1 
-			else
-				pc += inst.D
-				pc = pc + 1 
-			end
-			
-			
-			
-			
+		
 			
 		elseif op == opList.COVERAGE then
 			
@@ -659,17 +759,24 @@ local function decompileBlock(proto, indent, startpc, endpc, mainproto)
 			
 		else
 			print("PC: "..pc.."\nOPCODE:"..op.."\n\n")
-      table.insert(output, ("--UNSUPORTED OPCODE: %s\nAT PC: %s"):format(op, pc))
 			pc += 1
 		end
 	end
+	
+	env.script = old_env_script -- re-add the script that is calling into his enviroment again
+
+	
+
 
 	return output
 end
 
--- main decompiler function dont use it since it can generate some errors
+-- Entry decompiler function (example)
 local function decompile(proto, mainproto)
-	local lines = decompileBlock(proto, nil, nil, nil, mainproto)
+	local success, lines = pcall(decompileBlock, proto, nil, nil, nil, mainproto)
+	if not success then
+		return nil
+	end
 	return table.concat(lines, "\n")
 end
 
@@ -690,7 +797,7 @@ end
 
 
 
--- decompiler function
+
 local function decompileLuau(proto)
 	local ast
 	if proto.mainProto and proto.protoList then
@@ -699,7 +806,11 @@ local function decompileLuau(proto)
 	else
 		return cerror("MAIN","Invalid bytecode structure. Expected mainProto.")
 	end
-
+	
+	if ast == nil then
+		return cerror("MAIN", "Unknown error decompiling sorry please report this")
+	end
+	
 	local lines = ast
 	return "--DECOMPILED USING CELESTIAL V2.2 AS A FAST LUAU DECOMPILER\n--DECOMPILER MADE BY GLITCHED VOID\n\n"..lines
 end
