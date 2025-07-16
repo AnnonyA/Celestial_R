@@ -10,12 +10,11 @@ This was made for decompiling vLua compiler bytecode, this is still in beta do n
 Upvalue decompiling
 Function decompiling
 Global decompiling
+Numerical For loop decompiling (PARTIAL SUPPORT: still gives some errors)
 etc.
 
 # Known errors:
-May some times do a random function call in the end of the script
-Cannot decompile for, while and repeat loops -- if it can decompile repeat loops then i am sorry for putting this here
-May still cause errors since its still in beta
+Cannot decompile while and repeat loops, May cause some errors since its in beta
 
 # Usage:
 
